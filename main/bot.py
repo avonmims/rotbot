@@ -1,16 +1,78 @@
 import discord
 import gspread
+import yt_dlp
+import random
+import asyncio
+import array
 from oauth2client.service_account import ServiceAccountCredentials
 from discord.ext import commands
 
+# 1. set up discord bot
 intents = discord.Intents.default()
 intents.message_content = True  # enable access to message content
+bot = commands.Bot(command_prefix='!', intents=intents)
 
+# 2. set up google sheets access
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 client = gspread.authorize(creds) # authorize bot to access Google Sheets
+sheet = client.open("youtube_links").sheet1  # open the Google Sheet
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+# 3. yt-dlp options (high-quality audio)
+YDL_OPTIONS = {
+    'format': 'bestaudio/best',
+    'noplaylist': True, 'nocheck_certificate': True,
+    'quiet': True, 'no_warnings': True, 'source_address': '0.0.0.0'
+    }
+FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
+
+# 4. custom audio source to mix multiple audio streams
+
+class MultipleAudioSource(discord.AudioSource):
+    def __init__(self):
+        self.sources = []
+
+    def add_source(self, source):
+        self.sources.append(source)
+
+    def is_opus(self):
+        return False # we are using PCM audio
+
+    def read(self):
+        frame_size = 3840
+        if not self.sources:
+            return bytes([0] * frame_size) # silence if no sources
+        
+        data_s = []
+        for source in self.sources[:]:
+            data = source.read()
+            if not data:
+                self.sources.remove(source)
+                continue
+
+            if len(data) < frame_size:
+                data += bytes([0] * (frame_size - len(data))) # pad with silence if too short
+            data_s.append(data)
+
+        if not data_s:
+            return bytes([0] * frame_size) # silence if all sources ended
+        
+        arrays = [array.array('h', data) for data in data_s] # mix audio samples
+        mixed = [0] * (frame_size // 2)
+        for arr in arrays:
+            for i in range(len(mixed)):
+                mixed[i] += int(arr[i])
+
+        for i in range(len(mixed)):
+            if mixed[i] > 32767:
+                mixed[i] = 32767
+            elif mixed[i] < -32768:
+                mixed[i] = -32768
+
+        mixed_array = array.array('h', mixed)
+        return mixed_array.tobytes()
+
+# --------- bot commands ---------
 
 @bot.event
 async def on_ready():
@@ -23,10 +85,85 @@ async def hello(ctx):
     await ctx.send('what\'s up') # simple hello command
 
 @bot.command()
-async def check_links(ctx):
-    sheet = client.open("youtube_links").sheet1 # open sheet
-    data = sheet.get_all_records() # get all records
-    first_link = data[0]['link']
-    await ctx.send(f'i found the first link: {first_link}') # send first link found in sheet
+async def join(ctx):
+    """Joins the voice channel of the user who invoked the command"""
+    if ctx.author.voice:
+        channel = ctx.author.voice.channel
+        try:
+            if ctx.voice_client is not None: # check if bot is already in a voice channel
+                await ctx.voice_client.move_to(channel)
+            else:
+                await channel.connect()
+            await ctx.send(f'joined {channel.name}')
+        except Exception as e:
+            print(f'error joining voice channel: {e}')
+            await ctx.send(f'error joining voice channel: {e}')
+    else:
+        await ctx.send('you have to join a voice channel first dummy')
+
+@bot.command()
+async def leave(ctx):
+    """Disconnects the bot from the voice channel and resets the mixer"""
+    vc = ctx.voice_client
+    if vc:
+        if hasattr(vc, 'mixer'):
+            vc.mixer = None  # reset mixer
+        await vc.disconnect()
+        await ctx.send('left the voice channel')
+    else:
+        await ctx.send('i am not in a voice channel')
+
+@bot.command()
+async def play(ctx):
+    """Picks 3-5 random links from the Google Sheet and plays them"""
+    records = sheet.get_all_records() # fetch all rows from the sheet
+    count = random.randint(3, 5)
+    matches = random.sample(records, count) # randomly select a link
+
+    await ctx.invoke(join)  # ensure bot is in voice channel
+
+    for _ in range(10):
+        vc = ctx.voice_client
+        if vc and vc.is_connected():
+            break
+        await asyncio.sleep(0.5)
+    else:
+        return await ctx.send('failed to connect to voice channel')
+    
+    if vc.is_playing():
+        if not hasattr(vc, 'mixer'):
+            vc.stop() # stop current playback if no mixer
+    
+    if not hasattr(vc, 'mixer') or vc.mixer is None:
+        vc.mixer = MultipleAudioSource()  # initialize mixer if not present
+        try:
+            vc.play(vc.mixer)
+        except Exception as e:
+            print(f'handshake error: {e}')
+            return await ctx.send(f'error starting audio playback: {e}')
+        
+    played_titles = []
+    for match in matches:
+        url = match['link']
+        title = match['title']
+        genre = match['genre']
+        try:
+            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl: # play the audio using yt-dlp
+                info = ydl.extract_info(url, download=False)
+                url2 = info['url']
+            new_source = discord.FFmpegPCMAudio(url2, **FFMPEG_OPTIONS) # add new sound to mixer
+            vc.mixer.add_source(new_source)
+            played_titles.append(f'**{title}** | genre: **{genre}**')
+        except Exception as e:
+            await ctx.send(f'error adding source {title}: {str(e)}')
+
+    await ctx.send(f'playing:\n' + '\n'.join(played_titles))
 
 bot.run('MTQ2MzY2MjYxNjQ3MDYxODI1Mw.Gurfed.LWTRFHLtC6pVseIlB-v7yArSIhpoIjpS3zZFQ4')
+
+# to-do list:
+# randomize time stamp selection for video starting point to stagger audio
+# maybe cycle selections at random intervals instead of playing the same set for the whole duration
+# add more commands for user control (skip, pause, resume, stop, etc.)
+# error handling improvements
+# optimize audio mixing for better performance
