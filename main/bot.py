@@ -75,37 +75,44 @@ class MultipleAudioSource(discord.AudioSource):
 # --------- bot commands ---------
 
 @bot.event
-async def on_ready():
+async def on_ready(): 
     print(f'logged in as {bot.user.name} (ID: {bot.user.id})')
     print('big pp bot is ready to serve')
     print('------') # terminal initiation message
 
 @bot.command()
-async def hello(ctx):
+async def hello(ctx): # hello command
     await ctx.send('what\'s up') # simple hello command
 
-@bot.command()
+@bot.command() # join command
 async def join(ctx):
     """Joins the voice channel of the user who invoked the command"""
     if ctx.author.voice:
         channel = ctx.author.voice.channel
         try:
             if ctx.voice_client is not None: # check if bot is already in a voice channel
+                if ctx.voice_client.channel == channel: # already in the same channel, do nothing
+                    return False
                 await ctx.voice_client.move_to(channel)
             else:
                 await channel.connect()
             await ctx.send(f'joined {channel.name}')
+            return True
         except Exception as e:
             print(f'error joining voice channel: {e}')
             await ctx.send(f'error joining voice channel: {e}')
+            return False
     else:
         await ctx.send('you have to join a voice channel first dummy')
+        return False
 
-@bot.command()
+@bot.command() # leave command
 async def leave(ctx):
     """Disconnects the bot from the voice channel and resets the mixer"""
     vc = ctx.voice_client
     if vc:
+        if not ctx.author.voice or ctx.author.voice.channel != vc.channel: # check if user is in same channel
+            return await ctx.send(f'you must be in the same voice channel to use the !leave command')
         if hasattr(vc, 'mixer'):
             vc.mixer = None  # reset mixer
         await vc.disconnect()
@@ -113,16 +120,16 @@ async def leave(ctx):
     else:
         await ctx.send('i am not in a voice channel')
 
-@bot.command()
+@bot.command() # play command
 async def play(ctx):
-    """Picks 3-5 random links from the Google Sheet and plays them"""
+    """Picks 4-6 random links from the Google Sheet and plays them"""
     records = sheet.get_all_records() # fetch all rows from the sheet
-    count = random.randint(3, 5)
+    count = random.randint(4, 6) # 4-6 random selections
     matches = random.sample(records, count) # randomly select a link
 
     await ctx.invoke(join)  # ensure bot is in voice channel
 
-    for _ in range(10):
+    for _ in range(10): # wait for connection to establish
         vc = ctx.voice_client
         if vc and vc.is_connected():
             break
@@ -130,17 +137,15 @@ async def play(ctx):
     else:
         return await ctx.send('failed to connect to voice channel')
     
-    if vc.is_playing():
-        if not hasattr(vc, 'mixer'):
-            vc.stop() # stop current playback if no mixer
+    if hasattr(vc, 'mixer') and vc.mixer is not None and vc.is_playing(): # if already playing, return inform !shuffle
+        return await ctx.send (f'audio playing... use !shuffle to re-roll selection')
     
-    if not hasattr(vc, 'mixer') or vc.mixer is None:
-        vc.mixer = MultipleAudioSource()  # initialize mixer if not present
-        try:
-            vc.play(vc.mixer)
-        except Exception as e:
-            print(f'handshake error: {e}')
-            return await ctx.send(f'error starting audio playback: {e}')
+    vc.mixer = MultipleAudioSource()  # initialize mixer if not present
+    try:
+        vc.play(vc.mixer)
+    except Exception as e:
+        print(f'handshake error: {e}')
+        return await ctx.send(f'error starting audio playback: {e}')
         
     played_titles = []
     for match in matches:
@@ -159,11 +164,45 @@ async def play(ctx):
 
     await ctx.send(f'playing:\n' + '\n'.join(played_titles))
 
+@bot.command() # shuffle command
+async def shuffle(ctx):
+    """Stops current playback and re-rolls selection, displaying new titles"""
+    vc = ctx.voice_client
+    if not vc or not vc.is_connected():
+        return await ctx.send('i am not in a voice channel') # return warning if not connected
+    
+    if hasattr(vc, 'mixer') and vc.mixer is not None:
+        vc.stop()
+        vc.mixer = None # reset mixer
+
+    records = sheet.get_all_records() # fetch new selections
+    count = random.randint(4, 6)
+    matches = random.sample(records, count)
+
+    vc.mixer = MultipleAudioSource()  # initialize new mixer
+    try:
+        vc.play(vc.mixer)
+    except Exception as e:
+        print(f'handshake error: {e}')
+        return await ctx.send(f'error starting audio playback: {e}')
+    
+    played_titles = []
+    for match in matches:
+        url = match['link']
+        title = match['title']
+        genre = match['genre']
+        try:
+            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                info = ydl.extract_info(url, download=False)
+                url2 = info['url']
+            new_source = discord.FFmpegPCMAudio(url2, **FFMPEG_OPTIONS)
+            vc.mixer.add_source(new_source)
+            played_titles.append(f'**{title}** | genre: **{genre}**')
+        except Exception as e:
+            await ctx.send(f'error adding source {title}: {str(e)}')
+
+    await ctx.send(f'playing:\n' + '\n'.join(played_titles))
+
 bot.run('MTQ2MzY2MjYxNjQ3MDYxODI1Mw.Gurfed.LWTRFHLtC6pVseIlB-v7yArSIhpoIjpS3zZFQ4')
 
-# to-do list:
-# randomize time stamp selection for video starting point to stagger audio
-# maybe cycle selections at random intervals instead of playing the same set for the whole duration
-# add more commands for user control (skip, pause, resume, stop, etc.)
-# error handling improvements
-# optimize audio mixing for better performance
+# check notion for updated to-do list
