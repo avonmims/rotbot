@@ -16,7 +16,8 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 client = gspread.authorize(creds) # authorize bot to access Google Sheets
-sheet = client.open("youtube_links").sheet1  # open the Google Sheet
+sheet1 = client.open("youtube_links").worksheet("Occasional Sounds")  # open the Google Sheet for "Occasional Sounds"
+sheet2 = client.open("youtube_links").worksheet("LQ Music") # open the Google Sheet for "LQ Music"
 
 # 3. yt-dlp options (high-quality audio)
 YDL_OPTIONS = {
@@ -120,10 +121,10 @@ async def leave(ctx):
     else:
         await ctx.send('i am not in a voice channel')
 
-@bot.command() # play command
-async def play(ctx):
+@bot.command() # !random command for "Occasional Sounds" initiation
+async def sound(ctx):
     """Picks 4-6 random links from the Google Sheet and plays them"""
-    records = sheet.get_all_records() # fetch all rows from the sheet
+    records = sheet1.get_all_records() # fetch all rows from the sheet
     count = random.randint(4, 6) # 4-6 random selections
     matches = random.sample(records, count) # randomly select a link
 
@@ -164,7 +165,7 @@ async def play(ctx):
 
     await ctx.send(f'playing:\n' + '\n'.join(played_titles))
 
-@bot.command() # shuffle command
+@bot.command() # !shuffle command for "Occasional Sounds"
 async def shuffle(ctx):
     """Stops current playback and re-rolls selection, displaying new titles"""
     vc = ctx.voice_client
@@ -175,7 +176,7 @@ async def shuffle(ctx):
         vc.stop()
         vc.mixer = None # reset mixer
 
-    records = sheet.get_all_records() # fetch new selections
+    records = sheet1.get_all_records() # fetch new selections
     count = random.randint(4, 6)
     matches = random.sample(records, count)
 
@@ -203,6 +204,37 @@ async def shuffle(ctx):
 
     await ctx.send(f'playing:\n' + '\n'.join(played_titles))
 
+@bot.command() # !song command for "LQ Music"
+async def song(ctx):
+    """Plays a random song from the LQ Music Google Sheet"""
+    records = sheet2.get_all_records() # fetch all rows from the sheet
+    match = random.choice(records) # randomly select a link
+
+    await ctx.invoke(join)  # ensure bot is in voice channel
+
+    for _ in range(10): # wait for connection to establish
+        vc = ctx.voice_client
+        if vc and vc.is_connected():
+            break
+        await asyncio.sleep(0.5)
+    else:
+        return await ctx.send('failed to connect to voice channel')
+    
+    url = match['link']
+    title = match['title']
+    genre = match['genre']
+    try:
+        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl: # play the audio using yt-dlp
+            info = ydl.extract_info(url, download=False)
+            url2 = info['url']
+        source = discord.FFmpegPCMAudio(url2, **FFMPEG_OPTIONS)
+        vc.play(source)
+        await ctx.send(f'now playing: **{title}** | genre: **{genre}**')
+    except Exception as e:
+        await ctx.send(f'error playing song {title}: {str(e)}')
+
+
 bot.run('MTQ2MzY2MjYxNjQ3MDYxODI1Mw.Gurfed.LWTRFHLtC6pVseIlB-v7yArSIhpoIjpS3zZFQ4')
 
 # check notion for updated to-do list
+# check notion for notes... lol
