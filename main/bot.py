@@ -122,7 +122,7 @@ async def leave(ctx):
         await ctx.send('i am not in a voice channel')
 
 @bot.command() # !random command for "Occasional Sounds" initiation
-async def sound(ctx):
+async def rot(ctx):
     """Picks 4-6 random links from the Google Sheet and plays them"""
     records = sheet1.get_all_records() # fetch all rows from the sheet
     count = random.randint(4, 6) # 4-6 random selections
@@ -138,10 +138,17 @@ async def sound(ctx):
     else:
         return await ctx.send('failed to connect to voice channel')
     
-    if hasattr(vc, 'mixer') and vc.mixer is not None and vc.is_playing(): # if already playing, return inform !shuffle
-        return await ctx.send (f'audio playing... use !shuffle to re-roll selection')
+    #if hasattr(vc, 'mixer') and vc.mixer is not None and vc.is_playing(): # if already playing, return inform !shuffle
+    #    return await ctx.send (f'audio playing... use !shuffle to re-roll selection')
+
+    if vc.is_playing():
+        vc.stop()  # stop current playback
+    if hasattr(vc, 'mixer'):
+        vc.mixer = None  # reset mixer
     
     vc.mixer = MultipleAudioSource()  # initialize mixer if not present
+    vc.last_mode = 'rot' # track mode
+
     try:
         vc.play(vc.mixer)
     except Exception as e:
@@ -166,29 +173,46 @@ async def sound(ctx):
     await ctx.send(f'playing:\n' + '\n'.join(played_titles))
 
 @bot.command() # !shuffle command for "Occasional Sounds"
-async def shuffle(ctx):
+async def skip(ctx):
     """Stops current playback and re-rolls selection, displaying new titles"""
     vc = ctx.voice_client
     if not vc or not vc.is_connected():
         return await ctx.send('i am not in a voice channel') # return warning if not connected
-    
-    if hasattr(vc, 'mixer') and vc.mixer is not None:
-        vc.stop()
-        vc.mixer = None # reset mixer
 
-    records = sheet1.get_all_records() # fetch new selections
-    count = random.randint(4, 6)
-    matches = random.sample(records, count)
+    if vc.is_playing():
+        vc.stop()  # stop current playback
+    if hasattr(vc, 'mixer'):
+        vc.mixer = None  # reset mixer
 
-    vc.mixer = MultipleAudioSource()  # initialize new mixer
-    try:
-        vc.play(vc.mixer)
-    except Exception as e:
-        print(f'handshake error: {e}')
-        return await ctx.send(f'error starting audio playback: {e}')
-    
-    played_titles = []
-    for match in matches:
+    mode = getattr(vc, 'last_mode', None)
+    if mode == 'rot':
+        records = sheet1.get_all_records() # fetch new selections
+        count = random.randint(4, 6)
+        matches = random.sample(records, count)
+        vc.mixer = MultipleAudioSource()  # initialize new mixer
+        try:
+            vc.play(vc.mixer)
+        except Exception as e:
+            print(f'handshake error: {e}')
+            return await ctx.send(f'error starting audio playback: {e}')
+        played_titles = []
+        for match in matches:
+            url = match['link']
+            title = match['title']
+            genre = match['genre']
+            try:
+                with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    url2 = info['url']
+                new_source = discord.FFmpegPCMAudio(url2, **FFMPEG_OPTIONS)
+                vc.mixer.add_source(new_source)
+                played_titles.append(f'**{title}** | genre: **{genre}**')
+            except Exception as e:
+                await ctx.send(f'error adding source {title}: {str(e)}')
+        await ctx.send(f'playing:\n' + '\n'.join(played_titles))
+    elif mode == 'song':
+        records = sheet2.get_all_records() # fetch all rows
+        match = random.choice(records) # randomly select link
         url = match['link']
         title = match['title']
         genre = match['genre']
@@ -196,13 +220,13 @@ async def shuffle(ctx):
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
                 info = ydl.extract_info(url, download=False)
                 url2 = info['url']
-            new_source = discord.FFmpegPCMAudio(url2, **FFMPEG_OPTIONS)
-            vc.mixer.add_source(new_source)
-            played_titles.append(f'**{title}** | genre: **{genre}**')
+            source = discord.FFmpegPCMAudio(url2, **FFMPEG_OPTIONS)
+            vc.play(source)
+            await ctx.send(f'now playing: **{title}** | genre: **{genre}**')
         except Exception as e:
-            await ctx.send(f'error adding source {title}: {str(e)}')
-
-    await ctx.send(f'playing:\n' + '\n'.join(played_titles))
+            await ctx.send(f'error playing song {title}: {str(e)}')
+    else:
+        await ctx.send('no previous mode found, use !rot or !song first')
 
 @bot.command() # !song command for "LQ Music"
 async def song(ctx):
@@ -219,6 +243,13 @@ async def song(ctx):
         await asyncio.sleep(0.5)
     else:
         return await ctx.send('failed to connect to voice channel')
+    
+    if vc.is_playing():
+        vc.stop()  # stop current playback
+    if hasattr(vc, 'mixer'):
+        vc.mixer = None  # reset mixer
+    
+    vc.last_mode = 'song' # track mode
     
     url = match['link']
     title = match['title']
