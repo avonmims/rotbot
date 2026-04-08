@@ -2,8 +2,7 @@ import pandas as pd
 import pathlib
 import yt_dlp
 
-base_path = pathlib.Path(__file__).parent / 'mp3_clips' # path to mp3 clips folder
-
+# -- yt_dlp options for downloading audio and converting to mp3
 ydl_opts = {
     'format': 'bestaudio/best',
     'postprocessors': [{
@@ -13,10 +12,17 @@ ydl_opts = {
     }],
 }
 
-queue_df = pd.read_csv(pathlib.Path(__file__).parent / 'to_dl.csv') # csv to df, url and name columns
+# -- path to mp3 clips folder
+base_path = pathlib.Path(__file__).parent / 'mp3_clips'
 
-queue_df['exists'] = queue_df['name'].apply(lambda x: (base_path / f'{x}.mp3').exists()) # check if file already exists, add to df
-to_process = queue_df[queue_df['exists'] == False] # filter df to only ones that dont exist
+# -- csv to df, url and name columns
+queue_df = pd.read_csv(pathlib.Path(__file__).parent / 'to_dl.csv')
+
+# -- check if file already exists, true/false
+queue_df['exists'] = queue_df['name'].apply(lambda x: (base_path / f'{x}.mp3').exists())
+
+# -- filter df to 'exists' == false
+to_process = queue_df[queue_df['exists'] == False]
 
 # -- iterate through df and download each url as mp3 with yt_dlp, save as name.mp3 in mp3_clips folder
 for _, row in to_process.iterrows():
